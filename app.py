@@ -39,6 +39,11 @@ def get_db():
             detect_types=sqlite3.PARSE_DECLTYPES
         )
         g.db.row_factory = sqlite3.Row
+        # Add timestamps to old databases so new reactions can be time-filtered.
+        reaction_columns = g.db.execute('PRAGMA table_info(reactions)').fetchall()
+        if not any(column['name'] == 'created_at' for column in reaction_columns):
+            g.db.execute('ALTER TABLE reactions ADD COLUMN created_at TIMESTAMP')
+            g.db.commit()
 
     return g.db
 
@@ -78,6 +83,35 @@ def query_db(query, args=(), one=False, commit=False):
         print(f"Database error: {e}")
         return None
 
+
+COMMUNITY_GOAL_TARGET = 1000
+
+
+@app.context_processor
+def inject_community_goal():
+    """Makes the community contribution goal available site-wide."""
+    # The tracker counts only comments and reactions recorded in the last week.
+    result = query_db('''
+        SELECT (
+            (SELECT COUNT(*) FROM comments
+             WHERE created_at >= datetime('now', '-7 days')) +
+            (SELECT COUNT(*) FROM reactions
+             WHERE created_at >= datetime('now', '-7 days'))
+        ) AS total_contributions
+    ''', one=True)
+    total_contributions = result['total_contributions'] if result else 0
+    percentage = min(100, round(total_contributions / COMMUNITY_GOAL_TARGET * 100))
+
+    return {
+        'community_goal': {
+            'label': 'Community contributions',
+            'current': total_contributions,
+            'target': COMMUNITY_GOAL_TARGET,
+            'percentage': percentage,
+        }
+    }
+
+
 @app.template_filter('datetimeformat')
 def datetimeformat(value):
     if isinstance(value, datetime):
@@ -93,6 +127,46 @@ REACTION_EMOJIS = {
     'wow': '😮', 'sad': '😢', 'angry': '😠',
 }
 REACTION_TYPES = list(REACTION_EMOJIS.keys())
+# These groups define how received reactions affect a user's badge rating.
+POSITIVE_REACTIONS = ('like', 'love', 'laugh', 'wow')
+NEGATIVE_REACTIONS = ('sad', 'angry')
+
+
+@app.template_global()
+def user_badge(username):
+    """Returns a user's net reaction rating and earned badge."""
+    # Cache ratings during one request because names can appear several times.
+    if not hasattr(g, 'user_badges'):
+        g.user_badges = {}
+
+    if username not in g.user_badges:
+        rating = query_db('''
+            SELECT COALESCE(SUM(
+                       CASE
+                           WHEN r.reaction_type IN ('like', 'love', 'laugh', 'wow') THEN 1
+                           WHEN r.reaction_type IN ('sad', 'angry') THEN -1
+                           ELSE 0
+                       END
+                   ), 0) AS rating
+            FROM users u
+            LEFT JOIN posts p ON p.user_id = u.id
+            LEFT JOIN reactions r ON r.post_id = p.id
+            WHERE u.username = ?
+        ''', (username,), one=True)
+        rating = int(rating['rating']) if rating else 0
+
+        if rating >= 100:
+            badge = 'champion'
+        elif rating >= 50:
+            badge = 'voice'
+        elif rating < 0:
+            badge = 'toxic'
+        else:
+            badge = None
+
+        g.user_badges[username] = {'rating': rating, 'level': badge}
+
+    return g.user_badges[username]
 
 
 @app.route('/')
@@ -136,6 +210,51 @@ def feed():
         """
         final_params = params + list(pagination_params)
         posts = query_db(query, final_params)
+    elif sort == 'engagement':
+        # Community picks are available to logged-in users and avoid repeats.
+        if not current_user_id:
+            flash('Log in to see community picks selected for you.', 'info')
+            return redirect(url_for('login'))
+
+        engagement_conditions = [
+            'p.user_id != ?',
+            'NOT EXISTS (SELECT 1 FROM reactions ur WHERE ur.post_id = p.id AND ur.user_id = ?)',
+            'NOT EXISTS (SELECT 1 FROM comments uc WHERE uc.post_id = p.id AND uc.user_id = ?)',
+        ]
+        engagement_params = [current_user_id, current_user_id, current_user_id]
+        if show == 'following':
+            # Preserve the existing Following filter for community picks.
+            engagement_conditions.append(
+                'p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)'
+            )
+            engagement_params.append(current_user_id)
+
+        query = f'''
+            -- Rank posts by their combined reaction and comment activity.
+            SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id,
+                   COALESCE(r.total_reactions, 0) AS total_reactions,
+                   COALESCE(c.total_comments, 0) AS total_comments,
+                   COALESCE(r.total_reactions, 0) + COALESCE(c.total_comments, 0) AS engagement_score
+            FROM posts p
+            JOIN users u ON p.user_id = u.id
+            LEFT JOIN (
+                SELECT post_id, COUNT(*) AS total_reactions
+                FROM reactions
+                GROUP BY post_id
+            ) r ON p.id = r.post_id
+            LEFT JOIN (
+                SELECT post_id, COUNT(*) AS total_comments
+                FROM comments
+                GROUP BY post_id
+            ) c ON p.id = c.post_id
+            WHERE {' AND '.join(engagement_conditions)}
+            ORDER BY engagement_score DESC,
+                     total_reactions DESC,
+                     total_comments DESC,
+                     p.created_at DESC
+            LIMIT ? OFFSET ?
+        '''
+        posts = query_db(query, engagement_params + list(pagination_params))
     elif sort == 'recommended':
         posts = recommend(current_user_id, show == 'following' and current_user_id)
     else:  # Default sort is 'new'
@@ -200,6 +319,32 @@ def feed():
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
                            reaction_types=REACTION_TYPES)
+
+
+@app.route('/leaderboard')
+def leaderboard():
+    """Shows users ranked by the total attention received by their posts."""
+    # Separate DISTINCT counts prevent reactions and comments multiplying each other.
+    leaderboard_users = query_db('''
+        SELECT u.id,
+               u.username,
+               COUNT(DISTINCT p.id) AS posts_count,
+               COUNT(DISTINCT r.id) AS reactions_count,
+               COUNT(DISTINCT c.id) AS comments_count,
+               COUNT(DISTINCT r.id) + COUNT(DISTINCT c.id) AS attention_score
+        FROM users u
+        JOIN posts p ON p.user_id = u.id
+        LEFT JOIN reactions r ON r.post_id = p.id
+        LEFT JOIN comments c ON c.post_id = p.id
+        GROUP BY u.id, u.username
+        ORDER BY attention_score DESC,
+                 reactions_count DESC,
+                 comments_count DESC,
+                 posts_count DESC,
+                 u.username COLLATE NOCASE ASC
+    ''')
+
+    return render_template('leaderboard.html.j2', leaderboard_users=leaderboard_users)
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
@@ -566,11 +711,20 @@ def add_reaction():
 
     if existing_reaction:
         # Step 2: If it exists, UPDATE the reaction_type.
-        db.execute('UPDATE reactions SET reaction_type = ? WHERE id = ?',
+        # Changing a reaction makes it current activity for the seven-day tracker.
+        db.execute('''
+            UPDATE reactions
+            SET reaction_type = ?, created_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''',
                    (new_reaction_type, existing_reaction['id']))
     else:
         # Step 3: If it does not exist, INSERT a new reaction.
-        db.execute('INSERT INTO reactions (post_id, user_id, reaction_type) VALUES (?, ?, ?)',
+        # New reactions receive a timestamp used by the community goal query.
+        db.execute('''
+            INSERT INTO reactions (post_id, user_id, reaction_type, created_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ''',
                    (post_id, user_id, new_reaction_type))
 
     db.commit()

@@ -16,4 +16,25 @@ footer {
   text-align: center;
 }
 
+/* Keep the site-wide goal compact so it stays visible on every page. */
+.community-goal .progress {
+  height: 8px;
+}
+
+/* Badge colors distinguish positive achievement from negative activity. */
+.user-badge-champion {
+  background-color: #f5c542;
+  color: #382800;
+}
+
+.user-badge-voice {
+  background-color: #b7c4d6;
+  color: #1e293b;
+}
+
+.user-badge-toxic {
+  background-color: #7f1d1d;
+  color: #ffffff;
+}
+
 

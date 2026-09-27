@@ -44,6 +44,9 @@
           <a class="nav-link" href="/rules">Rules</a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('leaderboard') }}">Leaderboard</a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="/privacy">Privacy</a>
         </li>
 
@@ -53,7 +56,16 @@
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="navbarUserDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <!-- Display the username from the session -->
-              {{ session.get('username') }}
+              {# The navbar uses the same rating and badge names as user profiles. #}
+              {% set navbar_badge = user_badge(session.get('username')) %}
+              @{{ session.get('username') }}
+              {% if navbar_badge.level == 'champion' %}
+                <span class="badge rounded-pill ms-1 user-badge-champion" title="Community Champion: reaction rating {{ navbar_badge.rating }}">Community Champion</span>
+              {% elif navbar_badge.level == 'voice' %}
+                <span class="badge rounded-pill ms-1 user-badge-voice" title="Positive Voice: reaction rating {{ navbar_badge.rating }}">Positive Voice</span>
+              {% elif navbar_badge.level == 'toxic' %}
+                <span class="badge rounded-pill ms-1 user-badge-toxic" title="Toxic Element: reaction rating {{ navbar_badge.rating }}">Toxic Element</span>
+              {% endif %}
             </a>
             <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="navbarUserDropdown">
               <!-- Link to user's profile page -->
@@ -75,6 +87,26 @@
     </div>
   </div>
 </nav>
+
+<!-- Site-wide community engagement goal -->
+<!-- Clicking the tracker opens personalized posts for logged-in users. -->
+<a href="{% if session.get('user_id') %}{{ url_for('feed', sort='engagement') }}{% else %}{{ url_for('login') }}{% endif %}"
+   class="community-goal d-block border-bottom bg-white text-decoration-none text-reset"
+   title="View popular posts you have not interacted with">
+  <div class="container py-2">
+    <div class="d-flex justify-content-between align-items-center gap-3 mb-1">
+      <span class="small fw-semibold">{{ community_goal.label }}</span>
+      <span class="small text-muted">{{ community_goal.current }} / {{ community_goal.target }}</span>
+    </div>
+    <div class="progress" role="progressbar"
+         aria-label="{{ community_goal.current }} of {{ community_goal.target }} community contributions"
+         aria-valuenow="{{ community_goal.percentage }}" aria-valuemin="0" aria-valuemax="100">
+      <div class="progress-bar bg-success" style="width: {{ community_goal.percentage }}%;">
+        <span class="visually-hidden">{{ community_goal.percentage }} percent complete</span>
+      </div>
+    </div>
+  </div>
+</a>
 
 <!-- Main Content Area -->
 <div class="content-wrapper py-3">

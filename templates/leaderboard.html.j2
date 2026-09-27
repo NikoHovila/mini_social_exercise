@@ -1,0 +1,48 @@
+{% extends "base.html.j2" %}
+{% from "macros/user_macros.html.j2" import user_display %}
+{% block content %}
+{# This table ranks users by reactions and comments received on their posts. #}
+<div class="container mt-4">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h1 class="h2 mb-1">Leaderboard</h1>
+      <p class="text-muted mb-0">Users ranked by reactions and comments received on their posts.</p>
+    </div>
+  </div>
+
+  {% if leaderboard_users %}
+  <div class="table-responsive">
+    <table class="table table-striped table-hover align-middle">
+      <thead>
+        <tr>
+          <th scope="col">Rank</th>
+          <th scope="col">User</th>
+          <th scope="col">Posts</th>
+          <th scope="col">Reactions</th>
+          <th scope="col">Comments</th>
+          <th scope="col">Total attention</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in leaderboard_users %}
+        <tr>
+          <th scope="row">{{ loop.index }}</th>
+          <td>
+            {{ user_display(user.username) }}
+          </td>
+          <td>{{ user.posts_count }}</td>
+          <td>{{ user.reactions_count }}</td>
+          <td>{{ user.comments_count }}</td>
+          <td><strong>{{ user.attention_score }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="alert alert-info" role="status">
+    No users have posted yet.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

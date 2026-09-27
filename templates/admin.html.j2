@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% from "macros/user_macros.html.j2" import user_display %}
 
 {% block content %}
 <div class="container-fluid">
@@ -56,7 +57,7 @@
                     {% for user in users %}
                     <tr>
                         <td>{{ user.id }}</td>
-                        <td><a href="{{ url_for('user_profile', username=user.username) }}">{{ user.username }}</a></td>
+                        <td>{{ user_display(user.username) }}</td>
                         <td style="max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ user.profile or 'N/A' }}">{{ user.profile or 'N/A' }}</td>
                         <td>{{ user.created_at|datetimeformat }}</td>
                         <td>
@@ -115,7 +116,7 @@
                     {% for post in posts %}
                     <tr>
                         <td>{{ post.id }}</td>
-                        <td><a href="{{ url_for('user_profile', username=post.username) }}">{{ post.username }}</a></td>
+                        <td>{{ user_display(post.username) }}</td>
                         <td style="max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ post.content }}"><a href="{{ url_for('post_detail', post_id=post.id) }}">{{ post.content }}</a></td>
                         <td>{{ post.created_at|datetimeformat }}</td>
                         <td>
@@ -173,7 +174,7 @@
                     {% for comment in comments %}
                     <tr>
                         <td>{{ comment.id }}</td>
-                        <td><a href="{{ url_for('user_profile', username=comment.username) }}">{{ comment.username }}</a></td>
+                        <td>{{ user_display(comment.username) }}</td>
                         <td style="max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ comment.content }}">{{ comment.content }}</td>
                         <td>{{ comment.created_at|datetimeformat }}</td>
                         <td>

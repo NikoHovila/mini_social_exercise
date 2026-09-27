@@ -26,12 +26,13 @@
 
 <div class="mb-4 text-center">
 
-<!-- This is the 'sort' filter for New / Popular / Recommended -->
+<!-- Community picks are popular posts that the current user has not engaged with. -->
+<!-- This is the 'sort' filter for New / Popular / Community picks -->
   <div class="btn-group me-5" role="group" aria-label="Sort posts">
     <!-- The link preserves the current_show state -->
     <a href="{{ url_for('feed', sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
     <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
-    <a href="{{ url_for('feed', sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
+    <a href="{{ url_for('feed', sort='engagement', show=current_show) }}" class="btn {% if current_sort == 'engagement' %}btn-primary{% else %}btn-light{% endif %}">Community picks</a>
   </div>
 
   <!-- This is the 'show' filter for All / Following -->
