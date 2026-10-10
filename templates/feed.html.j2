@@ -1,6 +1,7 @@
 {% extends "base.html.j2" %}
 {% block content %}
 {% from "macros/user_macros.html.j2" import user_display %}
+{% from "macros/tone_macros.html.j2" import tone_scale %}
 
 <div class="align-center text-center">
   <img src="{{ url_for('static', filename='icon.png') }}" alt="Logo" style="height: 64px;" class="mb-4">
@@ -10,8 +11,9 @@
 <div class="col-md-8 mx-auto mb-4">
   <div class="card shadow-sm">
     <div class="card-body">
-      <h5 class="card-title">Create a new post</h5>
+      <h5 class="card-title">Create a new {{ 'off topic' if current_category == 'off_topic' else 'general' }} post</h5>
       <form action="{{ url_for('add_post') }}" method="POST">
+        <input type="hidden" name="category" value="{{ current_category }}">
         <div class="mb-3">
           <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
         </div>
@@ -22,17 +24,18 @@
 </div>
 {% endif %}
 
-<h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
+<h2 class="text-center border-bottom pb-2 mb-4"><span>{{ 'Off topic' if current_category == 'off_topic' else 'Posts' }}</span></h2>
 
 <div class="mb-4 text-center">
+{% set current_feed_endpoint = 'off_topic' if current_category == 'off_topic' else 'feed' %}
 
 <!-- Community picks are popular posts that the current user has not engaged with. -->
 <!-- This is the 'sort' filter for New / Popular / Community picks -->
   <div class="btn-group me-5" role="group" aria-label="Sort posts">
     <!-- The link preserves the current_show state -->
-    <a href="{{ url_for('feed', sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
-    <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
-    <a href="{{ url_for('feed', sort='engagement', show=current_show) }}" class="btn {% if current_sort == 'engagement' %}btn-primary{% else %}btn-light{% endif %}">Community picks</a>
+    <a href="{{ url_for(current_feed_endpoint, sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
+    <a href="{{ url_for(current_feed_endpoint, sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
+    <a href="{{ url_for(current_feed_endpoint, sort='engagement', show=current_show) }}" class="btn {% if current_sort == 'engagement' %}btn-primary{% else %}btn-light{% endif %}">Community picks</a>
   </div>
 
   <!-- This is the 'show' filter for All / Following -->
@@ -40,8 +43,8 @@
   {% if session.get('user_id') %}
   <div class="btn-group" role="group" aria-label="Filter posts">
     <!-- The link preserves the current_sort state -->
-    <a href="{{ url_for('feed', sort=current_sort, show='all') }}" class="btn {% if current_show == 'all' %}btn-primary{% else %}btn-light{% endif %}">All</a>
-    <a href="{{ url_for('feed', sort=current_sort, show='following') }}" class="btn {% if current_show == 'following' %}btn-primary{% else %}btn-light{% endif %}">Following</a>
+    <a href="{{ url_for(current_feed_endpoint, sort=current_sort, show='all') }}" class="btn {% if current_show == 'all' %}btn-primary{% else %}btn-light{% endif %}">All</a>
+    <a href="{{ url_for(current_feed_endpoint, sort=current_sort, show='following') }}" class="btn {% if current_show == 'following' %}btn-primary{% else %}btn-light{% endif %}">Following</a>
   </div>
    {% endif %}
 
@@ -78,6 +81,7 @@
       </div>
       
       <p class="mt-2">{{ entry.post.content }}</p>
+      {{ tone_scale(entry.post.tone_score, entry.post.tone_average, entry.post.tone_minimum, entry.post.tone_maximum) }}
 
       <!-- Reactions Display and Add Reaction Button -->
       <div class="d-flex align-items-center mt-2 mb-2">

@@ -107,6 +107,7 @@
                         <th>ID</th>
                         <th>Author</th>
                         <th>Content</th>
+                        <th>Section</th>
                         <th>Created At</th>
                         <th>Risk Level</th>
                         <th>Actions</th>
@@ -118,6 +119,7 @@
                         <td>{{ post.id }}</td>
                         <td>{{ user_display(post.username) }}</td>
                         <td style="max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ post.content }}"><a href="{{ url_for('post_detail', post_id=post.id) }}">{{ post.content }}</a></td>
+                        <td>{{ 'Off topic' if post.category == 'off_topic' else 'General' }}</td>
                         <td>{{ post.created_at|datetimeformat }}</td>
                         <td>
                             {% if post.risk_label == "HIGH" %}
@@ -132,6 +134,15 @@
                             <span class="ms-2">({{ post.risk_score }})</span>
                         </td>
                         <td>
+                            <form action="{{ url_for('admin_move_post', post_id=post.id) }}" method="POST" class="d-inline">
+                                {% if post.category == 'off_topic' %}
+                                <input type="hidden" name="category" value="general">
+                                <button type="submit" class="btn btn-sm btn-secondary">Move to general</button>
+                                {% else %}
+                                <input type="hidden" name="category" value="off_topic">
+                                <button type="submit" class="btn btn-sm btn-warning">Move to off topic</button>
+                                {% endif %}
+                            </form>
                             <form action="{{ url_for('admin_delete_post', post_id=post.id) }}" method="POST" onsubmit="return confirm('Are you sure you want to delete this post?');">
                                 <button type="submit" class="btn btn-sm btn-danger">Delete</button>
                             </form>

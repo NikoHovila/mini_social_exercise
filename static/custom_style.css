@@ -37,4 +37,75 @@ footer {
   color: #ffffff;
 }
 
+.tone-scale {
+  max-width: 360px;
+  margin: 0.65rem 0 0.4rem;
+  color: #52606d;
+  font-size: 0.75rem;
+}
+
+.tone-scale-values,
+.tone-scale-labels,
+.tone-scale-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tone-scale-track {
+  position: relative;
+  height: 1rem;
+  margin: 0.15rem 0;
+}
+
+.tone-scale-line {
+  position: absolute;
+  top: 0.45rem;
+  right: 0;
+  left: 0;
+  height: 0.2rem;
+  border-radius: 0.2rem;
+  background: linear-gradient(90deg, #d9534f, #d9d9d9 50%, #198754);
+}
+
+.tone-scale-dot {
+  position: absolute;
+  top: 0.12rem;
+  width: 0.85rem;
+  height: 0.85rem;
+  margin-left: -0.425rem;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 20%);
+}
+
+.tone-scale-dot-post,
+.tone-scale-key-post {
+  background-color: #198754;
+}
+
+.tone-scale-dot-average,
+.tone-scale-key-average {
+  background-color: #d9534f;
+}
+
+.tone-scale-legend {
+  justify-content: flex-start;
+  margin-top: 0.25rem;
+  color: #6c757d;
+}
+
+.tone-scale-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.tone-scale-key {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
 

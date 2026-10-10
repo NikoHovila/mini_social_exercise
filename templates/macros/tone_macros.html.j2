@@ -1,0 +1,21 @@
+{% macro tone_scale(post_score, average_score, minimum_score, maximum_score) %}
+<div class="tone-scale" aria-label="Post tone compared with the author's previous posts">
+  <div class="tone-scale-values">
+    <span>Post <strong>{{ '%.2f'|format(post_score) }}</strong></span>
+    <span>Average <strong>{{ '%.2f'|format(average_score) }}</strong></span>
+  </div>
+  <div class="tone-scale-track" role="img" aria-label="Tone range from {{ '%.2f'|format(minimum_score) }} to {{ '%.2f'|format(maximum_score) }}">
+    <span class="tone-scale-line"></span>
+    <span class="tone-scale-dot tone-scale-dot-post" style="left: {{ tone_position(post_score, minimum_score, maximum_score) }}%;" title="This post: {{ '%.2f'|format(post_score) }}"></span>
+    <span class="tone-scale-dot tone-scale-dot-average" style="left: {{ tone_position(average_score, minimum_score, maximum_score) }}%;" title="Author average: {{ '%.2f'|format(average_score) }}"></span>
+  </div>
+  <div class="tone-scale-labels">
+    <span>{{ '%.2f'|format(minimum_score) }}</span>
+    <span>{{ '%.2f'|format(maximum_score) }}</span>
+  </div>
+  <div class="tone-scale-legend">
+    <span><i class="tone-scale-key tone-scale-key-post"></i> This post</span>
+    <span><i class="tone-scale-key tone-scale-key-average"></i> Author average</span>
+  </div>
+</div>
+{% endmacro %}

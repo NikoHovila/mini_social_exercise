@@ -1,6 +1,7 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import collections
 import json
 import sqlite3
@@ -11,6 +12,9 @@ from datetime import datetime
 app = Flask(__name__)
 app.secret_key = '123456789' 
 DATABASE = 'database.sqlite'
+MODERATOR_USERNAME = 'moderator'
+MODERATOR_PASSWORD = 'moderator123!'
+POST_CATEGORIES = ('general', 'off_topic')
 
 # Load censorship data
 # WARNING! The censorship.dat file contains disturbing language when decrypted. 
@@ -26,6 +30,7 @@ MODERATION_CONFIG = json.loads(decrypted_data)
 TIER1_WORDS = MODERATION_CONFIG['categories']['tier1_severe_violations']['words']
 TIER2_PHRASES = MODERATION_CONFIG['categories']['tier2_spam_scams']['phrases']
 TIER3_WORDS = MODERATION_CONFIG['categories']['tier3_mild_profanity']['words']
+SENTIMENT_ANALYZER = SentimentIntensityAnalyzer()
 
 def get_db():
     """
@@ -45,7 +50,50 @@ def get_db():
             g.db.execute('ALTER TABLE reactions ADD COLUMN created_at TIMESTAMP')
             g.db.commit()
 
+        user_columns = g.db.execute('PRAGMA table_info(users)').fetchall()
+        if not any(column['name'] == 'role' for column in user_columns):
+            g.db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+            g.db.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
+            g.db.commit()
+
+        post_columns = g.db.execute('PRAGMA table_info(posts)').fetchall()
+        if not any(column['name'] == 'category' for column in post_columns):
+            g.db.execute("ALTER TABLE posts ADD COLUMN category TEXT NOT NULL DEFAULT 'general'")
+            g.db.commit()
+
     return g.db
+
+
+def ensure_moderator_account():
+    """Create the local test moderator account once, with a hashed password."""
+    db = get_db()
+    existing = db.execute(
+        'SELECT id FROM users WHERE username = ?', (MODERATOR_USERNAME,)
+    ).fetchone()
+    if not existing:
+        db.execute(
+            '''INSERT INTO users
+               (username, password, location, birthdate, profile, role)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (
+                MODERATOR_USERNAME,
+                generate_password_hash(MODERATOR_PASSWORD),
+                '',
+                '',
+                'Test moderator account',
+                'moderator',
+            )
+        )
+        db.commit()
+
+
+def has_moderator_access():
+    """Return whether the logged-in user can access moderation tools."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return False
+    user = query_db('SELECT role FROM users WHERE id = ?', (user_id,), one=True)
+    return bool(user and user['role'] in ('admin', 'moderator'))
 
 
 @app.teardown_appcontext
@@ -178,6 +226,7 @@ def feed():
         page = 1
     sort = request.args.get('sort', 'new').lower()
     show = request.args.get('show', 'all').lower()
+    category = 'off_topic' if request.path == '/off-topic' else 'general'
     
     # Define how many posts to show per page
     POSTS_PER_PAGE = 10
@@ -187,9 +236,10 @@ def feed():
     params = []
 
     #  2. Build the Query 
-    where_clause = ""
+    where_clause = "WHERE p.category = ?"
+    params.append(category)
     if show == 'following' and current_user_id:
-        where_clause = "WHERE p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
+        where_clause += " AND p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
         params.append(current_user_id)
 
     # Add the pagination parameters to the query arguments
@@ -217,11 +267,12 @@ def feed():
             return redirect(url_for('login'))
 
         engagement_conditions = [
+            'p.category = ?',
             'p.user_id != ?',
             'NOT EXISTS (SELECT 1 FROM reactions ur WHERE ur.post_id = p.id AND ur.user_id = ?)',
             'NOT EXISTS (SELECT 1 FROM comments uc WHERE uc.post_id = p.id AND uc.user_id = ?)',
         ]
-        engagement_params = [current_user_id, current_user_id, current_user_id]
+        engagement_params = [category, current_user_id, current_user_id, current_user_id]
         if show == 'following':
             # Preserve the existing Following filter for community picks.
             engagement_conditions.append(
@@ -297,6 +348,7 @@ def feed():
         comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post['id'],))
         post_dict = dict(post)
         post_dict['content'], _ = moderate_content(post_dict['content'])
+        post_dict = add_tone_metadata(post_dict)
         comments_moderated = []
         for comment in comments_raw:
             comment_dict = dict(comment)
@@ -315,10 +367,16 @@ def feed():
                            posts=posts_data, 
                            current_sort=sort,
                            current_show=show,
+                           current_category=category,
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
                            reaction_types=REACTION_TYPES)
+
+
+@app.route('/off-topic')
+def off_topic():
+    return feed()
 
 
 @app.route('/leaderboard')
@@ -358,15 +416,17 @@ def add_post():
 
     # Get content from the submitted form
     content = request.form.get('content')
+    category = request.form.get('category', 'general')
+    if category not in POST_CATEGORIES:
+        category = 'general'
 
-    # Pass the user's content through the moderation function
-    moderated_content = content
+    moderated_content, _ = moderate_content(content)
 
     # Basic validation to ensure post is not empty
     if moderated_content and moderated_content.strip():
         db = get_db()
-        db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
-                   (user_id, moderated_content))
+        db.execute('INSERT INTO posts (user_id, content, category) VALUES (?, ?, ?)',
+               (user_id, moderated_content, category))
         db.commit()
         flash('Your post was successfully created!', 'success')
     else:
@@ -425,12 +485,13 @@ def user_profile(username):
     moderated_bio, _ = moderate_content(user.get('profile', ''))
     user['profile'] = moderated_bio
 
-    posts_raw = query_db('SELECT id, content, user_id, created_at FROM posts WHERE user_id = ? ORDER BY created_at DESC', (user['id'],))
+    posts_raw = query_db("SELECT id, content, user_id, created_at FROM posts WHERE user_id = ? AND category = 'general' ORDER BY created_at DESC", (user['id'],))
     posts = []
     for post_raw in posts_raw:
         post = dict(post_raw)
         moderated_post_content, _ = moderate_content(post['content'])
         post['content'] = moderated_post_content
+        post = add_tone_metadata(post)
         posts.append(post)
 
     comments_raw = query_db('SELECT id, content, user_id, post_id, created_at FROM comments WHERE user_id = ? ORDER BY created_at DESC LIMIT 100', (user['id'],))
@@ -499,7 +560,7 @@ def post_detail(post_id):
     """Displays a single post and its comments, with content moderation applied."""
     
     post_raw = query_db('''
-        SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+        SELECT p.id, p.content, p.created_at, p.category, u.username, u.id as user_id
         FROM posts p
         JOIN users u ON p.user_id = u.id
         WHERE p.id = ?
@@ -515,6 +576,7 @@ def post_detail(post_id):
     # Unpack the tuple from moderate_content, we only need the moderated content string here
     moderated_post_content, _ = moderate_content(post['content'])
     post['content'] = moderated_post_content
+    post = add_tone_metadata(post)
 
     #  Fetch Reactions (No moderation needed) 
     reactions = query_db('''
@@ -560,7 +622,7 @@ def signup():
         password = request.form['password']
         location = request.form.get('location', '')
         birthdate = request.form.get('birthdate', '')
-        profile = request.form.get('profile', '')
+        profile, _ = moderate_content(request.form.get('profile', ''))
 
         hashed_password = generate_password_hash(password)
 
@@ -636,12 +698,13 @@ def add_comment(post_id):
 
     # Get content from the submitted form
     content = request.form.get('content')
+    moderated_content, _ = moderate_content(content)
 
     # Basic validation to ensure comment is not empty
-    if content and content.strip():
+    if moderated_content and moderated_content.strip():
         db = get_db()
         db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
-                   (post_id, user_id, content))
+                   (post_id, user_id, moderated_content))
         db.commit()
         flash('Your comment was added.', 'success')
     else:
@@ -830,7 +893,7 @@ def unfollow_user(user_id):
 def admin_dashboard():
     """Displays the admin dashboard with users, posts, and comments, sorted by risk."""
 
-    if session.get('username') != 'admin':
+    if not has_moderator_access():
         flash("You do not have permission to access this page.", "danger")
         return redirect(url_for('feed'))
 
@@ -884,7 +947,7 @@ def admin_dashboard():
     total_posts_pages = (total_posts_count + PAGE_SIZE - 1) // PAGE_SIZE
 
     posts_raw = query_db(f'''
-        SELECT p.id, p.content, p.created_at, u.username, u.created_at as user_created_at
+        SELECT p.id, p.content, p.created_at, p.category, u.username, u.created_at as user_created_at
         FROM posts p JOIN users u ON p.user_id = u.id
         ORDER BY p.id DESC -- Order by ID for consistent pagination before risk sort
         LIMIT ? OFFSET ?
@@ -964,7 +1027,7 @@ def admin_dashboard():
 
 @app.route('/admin/delete/user/<int:user_id>', methods=['POST'])
 def admin_delete_user(user_id):
-    if session.get('username') != 'admin':
+    if not has_moderator_access():
         flash("You do not have permission to perform this action.", "danger")
         return redirect(url_for('feed'))
         
@@ -979,9 +1042,33 @@ def admin_delete_user(user_id):
     return redirect(url_for('admin_dashboard'))
 
 
+@app.route('/admin/move-post/<int:post_id>', methods=['POST'])
+def admin_move_post(post_id):
+    if not has_moderator_access():
+        flash("You do not have permission to perform this action.", "danger")
+        return redirect(url_for('feed'))
+
+    category = request.form.get('category', 'off_topic')
+    if category not in POST_CATEGORIES:
+        flash('Invalid post section.', 'danger')
+        return redirect(url_for('admin_dashboard'))
+
+    db = get_db()
+    cursor = db.execute(
+        'UPDATE posts SET category = ? WHERE id = ?', (category, post_id)
+    )
+    db.commit()
+    if cursor.rowcount:
+        section_name = 'off topic' if category == 'off_topic' else 'general'
+        flash(f'Post {post_id} moved to the {section_name} section.', 'success')
+    else:
+        flash('Post not found.', 'danger')
+    return redirect(url_for('admin_dashboard', tab='posts'))
+
+
 @app.route('/admin/delete/post/<int:post_id>', methods=['POST'])
 def admin_delete_post(post_id):
-    if session.get('username') != 'admin':
+    if not has_moderator_access():
         flash("You do not have permission to perform this action.", "danger")
         return redirect(url_for('feed'))
 
@@ -996,7 +1083,7 @@ def admin_delete_post(post_id):
 
 @app.route('/admin/delete/comment/<int:comment_id>', methods=['POST'])
 def admin_delete_comment(comment_id):
-    if session.get('username') != 'admin':
+    if not has_moderator_access():
         flash("You do not have permission to perform this action.", "danger")
         return redirect(url_for('feed'))
 
@@ -1038,9 +1125,29 @@ def user_risk_analysis(user_id):
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
     
-    score = 0
+    user = query_db('SELECT profile, created_at FROM users WHERE id = ?', (user_id,), one=True)
+    if not user:
+        return 0.0
 
-    return score;
+    _, profile_score = moderate_content(user['profile'] or '')
+    post_scores = [moderate_content(row['content'])[1] for row in query_db(
+        'SELECT content FROM posts WHERE user_id = ?', (user_id,)
+    )]
+    comment_scores = [moderate_content(row['content'])[1] for row in query_db(
+        'SELECT content FROM comments WHERE user_id = ?', (user_id,)
+    )]
+
+    average_post_score = sum(post_scores) / len(post_scores) if post_scores else 0.0
+    average_comment_score = sum(comment_scores) / len(comment_scores) if comment_scores else 0.0
+    score = profile_score + (average_post_score * 3) + average_comment_score
+
+    account_age_days = (datetime.utcnow() - user['created_at']).days
+    if account_age_days < 7:
+        score *= 1.5
+    elif account_age_days < 30:
+        score *= 1.2
+
+    return min(5.0, score)
 
     
 # Assignment 2.1
@@ -1061,10 +1168,96 @@ def moderate_content(content):
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
 
-    moderated_content = content
-    score = 0
-    
+    if not content:
+        return '', 0.0
+
+    moderated_content = str(content)
+
+    for word in TIER1_WORDS:
+        if re.search(r'(?<!\w)' + re.escape(word) + r'(?!\w)', moderated_content, re.IGNORECASE):
+            return '[content removed due to severe violation]', 5.0
+
+    for phrase in TIER2_PHRASES:
+        if re.search(re.escape(phrase), moderated_content, re.IGNORECASE):
+            return '[content removed due to spam/scam policy]', 5.0
+
+    score = 0.0
+    for word in TIER3_WORDS:
+        pattern = re.compile(r'(?<!\w)' + re.escape(word) + r'(?!\w)', re.IGNORECASE)
+        matches = list(pattern.finditer(moderated_content))
+        if matches:
+            score += 2.0 * len(matches)
+            moderated_content = pattern.sub(lambda match: '*' * len(match.group(0)), moderated_content)
+
+    url_pattern = re.compile(r'https?://[^\s]+|www\.[^\s]+', re.IGNORECASE)
+    moderated_content, link_count = url_pattern.subn('[link removed]', moderated_content)
+    score += 2.0 * link_count
+
+    letters = [character for character in moderated_content if character.isalpha()]
+    if len(letters) > 15 and sum(character.isupper() for character in letters) / len(letters) > 0.70:
+        score += 0.5
+
     return moderated_content, score
+
+
+@app.template_global()
+def post_tone(content):
+    """Return VADER's compound sentiment score for content."""
+    if not content:
+        return 0.0
+    return SENTIMENT_ANALYZER.polarity_scores(content)['compound']
+
+
+def tone_stats_for_user(user_id):
+    """Return the author's all-time tone range and average post score."""
+    if not hasattr(g, 'tone_stats'):
+        g.tone_stats = {}
+
+    if user_id not in g.tone_stats:
+        rows = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+        scores = [post_tone(row['content']) for row in rows]
+        if scores:
+            g.tone_stats[user_id] = {
+                'minimum': min(scores),
+                'maximum': max(scores),
+                'average': sum(scores) / len(scores),
+            }
+        else:
+            g.tone_stats[user_id] = {
+                'minimum': 0.0,
+                'maximum': 0.0,
+                'average': 0.0,
+            }
+
+    return g.tone_stats[user_id]
+
+
+def add_tone_metadata(post):
+    """Attach the post score and its author's all-time comparison values."""
+    post['tone_score'] = post_tone(post.get('content', ''))
+    stats = tone_stats_for_user(post['user_id'])
+    post['tone_minimum'] = stats['minimum']
+    post['tone_maximum'] = stats['maximum']
+    post['tone_average'] = stats['average']
+    return post
+
+
+@app.template_global()
+def tone_position(score, minimum, maximum):
+    """Map a tone score to a percentage within the author's observed range."""
+    if maximum <= minimum:
+        return 50
+    position = (score - minimum) / (maximum - minimum) * 100
+    return round(max(0, min(100, position)), 2)
+
+
+@app.template_global()
+def tone_label(score):
+    if score >= 0.05:
+        return 'Positive'
+    if score <= -0.05:
+        return 'Negative'
+    return 'Neutral'
 
 # Coding Assignment #3
 # Assignment 3.1
@@ -1091,6 +1284,10 @@ def recommend(user_id, filter_following):
     recommended_posts = {} 
 
     return recommended_posts;
+
+with app.app_context():
+    ensure_moderator_account()
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
