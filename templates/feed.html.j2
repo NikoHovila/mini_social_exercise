@@ -29,12 +29,14 @@
 <div class="mb-4 text-center">
 {% set current_feed_endpoint = 'off_topic' if current_category == 'off_topic' else 'feed' %}
 
-<!-- Community picks are popular posts that the current user has not engaged with. -->
-<!-- This is the 'sort' filter for New / Popular / Community picks -->
+<!-- This is the 'sort' filter for New / Popular / Recommended / Community picks -->
   <div class="btn-group me-5" role="group" aria-label="Sort posts">
     <!-- The link preserves the current_show state -->
     <a href="{{ url_for(current_feed_endpoint, sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
     <a href="{{ url_for(current_feed_endpoint, sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
+    {% if session.get('user_id') %}
+    <a href="{{ url_for(current_feed_endpoint, sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
+    {% endif %}
     <a href="{{ url_for(current_feed_endpoint, sort='engagement', show=current_show) }}" class="btn {% if current_sort == 'engagement' %}btn-primary{% else %}btn-light{% endif %}">Community picks</a>
   </div>
 
@@ -82,6 +84,9 @@
       
       <p class="mt-2">{{ entry.post.content }}</p>
       {{ tone_scale(entry.post.tone_score, entry.post.tone_average, entry.post.tone_minimum, entry.post.tone_maximum) }}
+      {% if current_sort == 'recommended' and entry.post.recommendation_reason %}
+      <p class="small text-muted mb-2">{{ entry.post.recommendation_reason }}</p>
+      {% endif %}
 
       <!-- Reactions Display and Add Reaction Button -->
       <div class="d-flex align-items-center mt-2 mb-2">
@@ -195,12 +200,12 @@
 </div>
 
   <div class="d-flex justify-content-center align-items-center my-4">
-    <a href="{{ url_for('feed', page=page-1, sort=current_sort, show=current_show) }}"
+    <a href="{{ url_for(current_feed_endpoint, page=page-1, sort=current_sort, show=current_show) }}"
       class="btn btn-primary {% if page <= 1 %}btn-light disabled{% endif %}">
       &laquo; Previous
     </a>
     <span class="mx-3 text-muted">Page {{ page }}</span>
-    <a href="{{ url_for('feed', page=page+1, sort=current_sort, show=current_show) }}"
+    <a href="{{ url_for(current_feed_endpoint, page=page+1, sort=current_sort, show=current_show) }}"
       class="btn btn-primary {% if posts|length < per_page %}disabled{% endif %}">
       Next &raquo;
     </a>

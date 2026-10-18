@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort, has_request_context
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -15,6 +15,7 @@ DATABASE = 'database.sqlite'
 MODERATOR_USERNAME = 'moderator'
 MODERATOR_PASSWORD = 'moderator123!'
 POST_CATEGORIES = ('general', 'off_topic')
+ANNOUNCEMENT_CATEGORY = 'announcement'
 
 # Load censorship data
 # WARNING! The censorship.dat file contains disturbing language when decrypted. 
@@ -307,7 +308,11 @@ def feed():
         '''
         posts = query_db(query, engagement_params + list(pagination_params))
     elif sort == 'recommended':
-        posts = recommend(current_user_id, show == 'following' and current_user_id)
+        posts = recommend(
+            current_user_id,
+            show == 'following' and current_user_id,
+            category,
+        )
     else:  # Default sort is 'new'
         query = f"""
             SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
@@ -377,6 +382,63 @@ def feed():
 @app.route('/off-topic')
 def off_topic():
     return feed()
+
+
+@app.route('/announcements')
+def announcements():
+    """Show signup announcements as reactable community posts."""
+    current_user_id = session.get('user_id')
+    posts_raw = query_db('''
+        SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id
+        FROM posts p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.category = ?
+        ORDER BY p.created_at DESC
+    ''', (ANNOUNCEMENT_CATEGORY,))
+
+    posts = []
+    for post_raw in posts_raw:
+        post = dict(post_raw)
+        post['content'], _ = moderate_content(post['content'])
+        reactions = query_db(
+            'SELECT reaction_type, COUNT(*) AS count FROM reactions '
+            'WHERE post_id = ? GROUP BY reaction_type',
+            (post['id'],)
+        )
+        user_reaction = None
+        if current_user_id:
+            reaction = query_db(
+                'SELECT reaction_type FROM reactions '
+                'WHERE user_id = ? AND post_id = ?',
+                (current_user_id, post['id']),
+                one=True
+            )
+            user_reaction = reaction['reaction_type'] if reaction else None
+        comments_raw = query_db('''
+            SELECT c.id, c.content, c.created_at, u.username, u.id AS user_id
+            FROM comments c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.post_id = ?
+            ORDER BY c.created_at ASC
+        ''', (post['id'],))
+        comments = []
+        for comment_raw in comments_raw:
+            comment = dict(comment_raw)
+            comment['content'], _ = moderate_content(comment['content'])
+            comments.append(comment)
+        posts.append({
+            'post': post,
+            'reactions': reactions,
+            'user_reaction': user_reaction,
+            'comments': comments,
+        })
+
+    return render_template(
+        'announcements.html.j2',
+        posts=posts,
+        reaction_emojis=REACTION_EMOJIS,
+        reaction_types=REACTION_TYPES,
+    )
 
 
 @app.route('/leaderboard')
@@ -622,7 +684,14 @@ def signup():
         password = request.form['password']
         location = request.form.get('location', '')
         birthdate = request.form.get('birthdate', '')
-        profile, _ = moderate_content(request.form.get('profile', ''))
+        raw_profile = request.form.get('profile', '').strip()
+        if not raw_profile:
+            flash('Profile is required so the community can get to know you.', 'warning')
+            return render_template('signup.html.j2')
+        profile, _ = moderate_content(raw_profile)
+        if not profile.strip():
+            flash('Profile cannot be empty after moderation.', 'warning')
+            return render_template('signup.html.j2')
 
         hashed_password = generate_password_hash(password)
 
@@ -637,6 +706,13 @@ def signup():
 
             # 1. Get the ID of the user we just created.
             new_user_id = cur.lastrowid
+
+            announcement = f'Welcome {username} to Mini Social!\n\n{profile}'
+            cur.execute(
+                'INSERT INTO posts (user_id, content, category) VALUES (?, ?, ?)',
+                (new_user_id, announcement, ANNOUNCEMENT_CATEGORY)
+            )
+            db.commit()
 
             # 2. Add user info to the session cookie.
             session.clear() # Clear any old session data
@@ -1261,7 +1337,7 @@ def tone_label(score):
 
 # Coding Assignment #3
 # Assignment 3.1
-def recommend(user_id, filter_following):
+def recommend(user_id, filter_following, category='general'):
     """
     Args:
         user_id: The ID of the current user.
@@ -1281,9 +1357,132 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
-    recommended_posts = {} 
+    if not user_id or category not in POST_CATEGORIES:
+        return []
 
-    return recommended_posts;
+    positive_reactions = ('like', 'love', 'laugh', 'wow')
+    non_topic_words = {
+        'about', 'after', 'again', 'also', 'because', 'before', 'being',
+        'could', 'from', 'have', 'just', 'more', 'some', 'that', 'their',
+        'there', 'these', 'they', 'this', 'what', 'when', 'where', 'which',
+        'with', 'would', 'your', 'been', 'brighten', 'everyday',
+        'excited', 'feeling', 'feelings', 'great',
+        'importance', 'latest', 'life', 'like', 'make', 'moments',
+        'people', 'really', 'small', 'today',
+        'attended', 'beats', 'check', 'choices', 'could', 'everyone', 'every',
+        'fresh', 'good', 'hard', 'heard', 'local',
+        'absolutely', 'back', 'change', 'create', 'exploring', 'hidden',
+        'positivity', 'time', 'sometimes',
+    }
+
+    def meaningful_words(content):
+        return {
+            word.lower()
+            for word in re.findall(r'\b\w{4,}\b', content or '')
+            if word.lower() not in non_topic_words
+        }
+
+    seed_posts = query_db('''
+        SELECT p.id, p.user_id, p.content
+        FROM posts p
+        JOIN reactions r ON r.post_id = p.id
+                WHERE p.category = ?
+                    AND r.user_id = ? AND r.reaction_type IN (?, ?, ?, ?)
+        ''', (category, user_id, *positive_reactions))
+    followed_users = query_db(
+        'SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,)
+    )
+    followed_ids = {row['followed_id'] for row in followed_users}
+
+    if filter_following and not followed_ids:
+        return []
+
+    seed_words = set()
+    positively_engaged_authors = set()
+    for seed in seed_posts:
+        positively_engaged_authors.add(seed['user_id'])
+        seed_words.update(meaningful_words(seed['content']))
+
+    candidates = query_db('''
+        SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id
+        FROM posts p
+        JOIN users u ON u.id = p.user_id
+        WHERE p.category = ?
+          AND p.user_id != ?
+          AND NOT EXISTS (
+              SELECT 1 FROM reactions r
+              WHERE r.post_id = p.id AND r.user_id = ?
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM comments c
+              WHERE c.post_id = p.id AND c.user_id = ?
+          )
+    ''', (category, user_id, user_id, user_id))
+
+    ranked = []
+    for candidate in candidates:
+        if filter_following and candidate['user_id'] not in followed_ids:
+            continue
+
+        candidate_words = meaningful_words(candidate['content'])
+        shared_terms = sorted(seed_words & candidate_words)
+        shared_words = len(shared_terms)
+        is_followed = candidate['user_id'] in followed_ids
+        has_term_similarity = shared_words >= 2
+        priority_tier = 2 if is_followed else 1 if has_term_similarity else 0
+        score = priority_tier * 100
+        reasons = []
+        if is_followed:
+            score += 4
+            reasons.append(f"you follow {candidate['username']}")
+        if candidate['user_id'] in positively_engaged_authors:
+            score += 2
+            reasons.append(
+                f"you positively reacted to another post by {candidate['username']}"
+            )
+        if shared_words >= 2:
+            matching_terms = ', '.join(shared_terms[:4])
+            if shared_words >= 4:
+                reasons.append(
+                    f"it closely matches themes you liked ({shared_words} shared terms: {matching_terms})"
+                )
+            else:
+                reasons.append(
+                    f"it shares {shared_words} terms with posts you liked: {matching_terms}"
+                )
+        score += min(shared_words, 6)
+        candidate_dict = dict(candidate)
+        candidate_dict['recommendation_reason'] = (
+            'Recommended because ' + ' and '.join(reasons) + '.'
+            if reasons
+            else 'Recommended as a recent post that you have not interacted with yet.'
+        )
+        ranked.append((score, candidate['created_at'], candidate_dict))
+
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    candidates_by_id = {str(candidate['id']): candidate for _, _, candidate in ranked}
+    selected = []
+    selected_authors = set()
+
+    recommendation_key = f'recommended_posts_v2_{category}_{int(bool(filter_following))}'
+    previous_ids = session.get(recommendation_key, []) if has_request_context() else []
+    for post_id in previous_ids:
+        candidate = candidates_by_id.get(str(post_id))
+        if candidate and candidate['user_id'] not in selected_authors:
+            selected.append(candidate)
+            selected_authors.add(candidate['user_id'])
+
+    for _, _, candidate in ranked:
+        if len(selected) >= 5:
+            break
+        if candidate['user_id'] not in selected_authors:
+            selected.append(candidate)
+            selected_authors.add(candidate['user_id'])
+
+    if has_request_context():
+        session[recommendation_key] = [candidate['id'] for candidate in selected]
+
+    return selected
 
 with app.app_context():
     ensure_moderator_account()

@@ -1,0 +1,111 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/user_macros.html.j2" import user_display %}
+
+<div class="col-md-8 mx-auto">
+  <h2 class="text-center border-bottom pb-2 mb-4">Community announcements</h2>
+  <p class="text-center text-muted mb-4">
+    Meet our newest community members and learn a little about them.
+  </p>
+
+  {% for entry in posts %}
+  <article class="card mb-4 shadow-sm" id="announcement-{{ entry.post.id }}">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center">
+        <h3 class="card-title mb-0">
+          <a href="{{ url_for('user_profile', username=entry.post.username) }}">
+            {{ user_display(entry.post.username) }}
+          </a>
+        </h3>
+        <small class="text-muted">{{ entry.post.created_at|datetimeformat }}</small>
+      </div>
+
+      <p class="mt-3 mb-3" style="white-space: pre-line;">{{ entry.post.content }}</p>
+
+      <div class="d-flex align-items-center">
+        <div class="reactions-display me-2">
+          {% if entry.reactions %}
+            {% for react in entry.reactions %}
+              {% if react.reaction_type == entry.user_reaction %}
+              <form action="{{ url_for('unreact') }}" method="post" class="d-inline">
+                <input type="hidden" name="post_id" value="{{ entry.post.id }}">
+                <button type="submit" class="btn btn-light text-dark me-1" title="Remove {{ react.reaction_type }} reaction">
+                  {{ reaction_emojis.get(react.reaction_type, '👍') }} {{ react.count }}
+                </button>
+              </form>
+              {% else %}
+              <span class="text-dark me-1" title="{{ react.reaction_type|capitalize }}">
+                {{ reaction_emojis.get(react.reaction_type, '👍') }} {{ react.count }}
+              </span>
+              {% endif %}
+            {% endfor %}
+          {% else %}
+            <span class="text-muted">No reactions yet</span>
+          {% endif %}
+        </div>
+
+        {% if session.get('user_id') %}
+        <div class="dropdown">
+          <button class="btn btn-sm btn-light text-dark rounded-circle m-0" type="button"
+                  id="announcementReaction-{{ entry.post.id }}" data-bs-toggle="dropdown"
+                  aria-expanded="false" title="Add reaction">+</button>
+          <ul class="dropdown-menu" aria-labelledby="announcementReaction-{{ entry.post.id }}">
+            {% for reaction_type in reaction_types %}
+            <li>
+              <form action="{{ url_for('add_reaction') }}" method="POST" class="d-inline">
+                <input type="hidden" name="post_id" value="{{ entry.post.id }}">
+                <input type="hidden" name="reaction" value="{{ reaction_type }}">
+                <button type="submit" class="dropdown-item">
+                  {{ reaction_emojis.get(reaction_type, '👍') }} {{ reaction_type|capitalize }}
+                </button>
+              </form>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if entry.comments %}
+      <hr>
+      <h6>Welcome messages ({{ entry.comments|count }})</h6>
+      <ul class="list-group list-group-flush shadow-none border-0">
+        {% for comment in entry.comments %}
+        <li class="card shadow-none p-2 mt-2">
+          <div class="d-flex justify-content-between">
+            <div>
+              <strong>
+                <a href="{{ url_for('user_profile', username=comment.username) }}">
+                  {{ user_display(comment.username) }}
+                </a>
+              </strong>
+              <p class="mb-0">{{ comment.content }}</p>
+            </div>
+            {% if session.get('user_id') == comment.user_id or session.get('user_id') == entry.post.user_id %}
+            <form action="{{ url_for('delete_comment', comment_id=comment.id) }}" method="POST">
+              <button type="submit" class="btn btn-sm btn-danger" title="Delete comment">delete</button>
+            </form>
+            {% endif %}
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if session.get('user_id') %}
+      <form action="{{ url_for('add_comment', post_id=entry.post.id) }}" method="POST" class="mt-3">
+        <div class="input-group">
+          <input type="text" class="form-control" name="content" placeholder="Write a welcome message..." required>
+          <button type="submit" class="btn btn-primary">Comment</button>
+        </div>
+      </form>
+      {% else %}
+      <p class="small text-muted mt-3 mb-0">Log in to write a welcome message.</p>
+      {% endif %}
+    </div>
+  </article>
+  {% else %}
+  <p class="text-center text-muted">No community announcements yet.</p>
+  {% endfor %}
+</div>
+{% endblock %}
